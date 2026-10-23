@@ -59,7 +59,11 @@ public struct IndeedSource: JobSource {
     }
 
     func buildQuery(_ query: SearchQuery, cursor: String?) -> String {
-        let term = query.keywords.replacingOccurrences(of: "\"", with: "\\\"")
+        // GraphQL string literal: escape backslashes first, then quotes.
+        let term = query.keywords
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .components(separatedBy: .newlines).joined(separator: " ")
         let what = term.isEmpty ? "" : "what: \"\(term)\""
         let cur = cursor.map { "cursor: \"\($0)\"" } ?? ""
         // No location: the whole country (selected via the indeed-co header).

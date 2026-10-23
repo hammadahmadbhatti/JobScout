@@ -29,8 +29,17 @@ public struct ATSCompany: Codable, Identifiable, Hashable, Sendable {
     public init(name: String, ats: ATSKind, slug: String, host: String = "") {
         self.name = name
         self.ats = ats
-        self.slug = slug
-        self.host = host
+        // Slugs and hosts go into feed URLs: keep them to the characters the
+        // ATS vendors use, so a typed slug can't point a request elsewhere.
+        self.slug = String(slug.unicodeScalars.filter {
+            $0.isASCII && (CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_")
+        }.map(Character.init))
+        self.host = Self.isPersonioHost(host) ? host.lowercased() : ""
+    }
+
+    static func isPersonioHost(_ host: String) -> Bool {
+        host.lowercased().range(
+            of: #"^[a-z0-9-]+\.jobs\.personio\.(de|com)$"#, options: .regularExpression) != nil
     }
 }
 
@@ -49,8 +58,8 @@ public enum ATSClient {
     // MARK: Personio — https://{slug}.jobs.personio.de/xml
 
     static func personio(_ c: ATSCompany) async throws -> [Job] {
-        let host = c.host.isEmpty ? "\(c.slug).jobs.personio.de" : c.host
-        let xml = try await HTTP.getString(URL(string: "https://\(host)/xml")!)
+        let host = ATSCompany.isPersonioHost(c.host) ? c.host : "\(c.slug).jobs.personio.de"
+        let xml = try await HTTP.getString(try HTTP.makeURL("https://\(host)/xml"))
         let doc = try SwiftSoup.parse(xml, "", Parser.xmlParser())
         var jobs: [Job] = []
         for pos in try doc.select("position").array() {
@@ -100,7 +109,7 @@ public enum ATSClient {
     }
 
     static func greenhouse(_ c: ATSCompany) async throws -> [Job] {
-        let url = URL(string: "https://boards-api.greenhouse.io/v1/boards/\(c.slug)/jobs?content=true")!
+        let url = try HTTP.makeURL("https://boards-api.greenhouse.io/v1/boards/\(c.slug)/jobs?content=true")
         let data = try await HTTP.get(url)
         let resp = try JSONDecoder().decode(GHResponse.self, from: data)
         return (resp.jobs ?? []).compactMap { j in
@@ -141,7 +150,7 @@ public enum ATSClient {
     }
 
     static func lever(_ c: ATSCompany) async throws -> [Job] {
-        let url = URL(string: "https://api.lever.co/v0/postings/\(c.slug)?mode=json")!
+        let url = try HTTP.makeURL("https://api.lever.co/v0/postings/\(c.slug)?mode=json")
         let data = try await HTTP.get(url)
         let list = try JSONDecoder().decode([LeverJob].self, from: data)
         return list.compactMap { j in
@@ -187,7 +196,7 @@ public enum ATSClient {
     }
 
     static func recruitee(_ c: ATSCompany) async throws -> [Job] {
-        let url = URL(string: "https://\(c.slug).recruitee.com/api/offers/")!
+        let url = try HTTP.makeURL("https://\(c.slug).recruitee.com/api/offers/")
         let data = try await HTTP.get(url)
         let resp = try JSONDecoder().decode(RecruiteeResponse.self, from: data)
         return (resp.offers ?? []).compactMap { o in
@@ -229,7 +238,7 @@ public enum ATSClient {
         var jobs: [Job] = []
         var offset = 0
         while offset <= 400 {
-            let url = URL(string: "https://api.smartrecruiters.com/v1/companies/\(c.slug)/postings?limit=100&offset=\(offset)")!
+            let url = try HTTP.makeURL("https://api.smartrecruiters.com/v1/companies/\(c.slug)/postings?limit=100&offset=\(offset)")
             let data = try await HTTP.get(url)
             let resp = try JSONDecoder().decode(SRResponse.self, from: data)
             let posts = resp.content ?? []

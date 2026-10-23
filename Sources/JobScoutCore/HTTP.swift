@@ -30,9 +30,34 @@ public enum HTTP {
         return URLSession(configuration: cfg)
     }()
 
+    /// Only web URLs are fetched. Links come from job sites and company
+    /// feeds; URLSession would otherwise happily read a `file://` URL.
+    public static func requireWeb(_ url: URL) throws {
+        guard isWebURL(url) else {
+            throw SourceError("Refused to load a non-web link (\(url.scheme ?? "no scheme")).")
+        }
+    }
+
+    public static func isWebURL(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http" else {
+            return false
+        }
+        return url.host?.isEmpty == false
+    }
+
+    /// Builds a URL from a string that contains outside data (slugs, ids)
+    /// without crashing on characters URL(string:) rejects.
+    public static func makeURL(_ string: String) throws -> URL {
+        guard let url = URL(string: string), isWebURL(url) else {
+            throw SourceError("Invalid address: \(string)")
+        }
+        return url
+    }
+
     public static func get(
         _ url: URL, headers: [String: String] = [:]
     ) async throws -> Data {
+        try requireWeb(url)
         var req = URLRequest(url: url)
         req.setValue(browserUA, forHTTPHeaderField: "User-Agent")
         for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
@@ -53,6 +78,7 @@ public enum HTTP {
     public static func postJSON(
         _ url: URL, body: Data, headers: [String: String] = [:]
     ) async throws -> Data {
+        try requireWeb(url)
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.httpBody = body

@@ -190,7 +190,10 @@ public enum XLSX {
                     cells += #"<c r="\#(ref)" s="\#(style.rawValue)"><v>\#(serial(value))</v></c>"#
                 case let .link(url):
                     cells += inlineString(ref, url, .link)
-                    if url.hasPrefix("http"), url.count < 2000 { links.append((ref, url)) }
+                    // Only real web links become clickable (never file: or app links).
+                    if let u = URL(string: url), HTTP.isWebURL(u), url.count < 2000 {
+                        links.append((ref, url))
+                    }
                 }
             }
             rowsXML += "<row \(attrs)>\(cells)</row>"
@@ -279,6 +282,17 @@ public enum XLSX {
         let cleaned = name.filter { !"[]:*?/\\".contains($0) }
         let trimmed = String(cleaned.prefix(31))
         return trimmed.isEmpty ? "Sheet" : trimmed
+    }
+
+    /// A CSV field that Excel/Numbers won't run as a formula: text starting
+    /// with = + - @ (or a tab/CR) gets a leading apostrophe. Scraped titles
+    /// could otherwise smuggle formulas into an exported CSV.
+    public static func csvField(_ s: String) -> String {
+        var value = s
+        if let first = value.unicodeScalars.first, "=+-@\t\r".unicodeScalars.contains(first) {
+            value = "'" + value
+        }
+        return "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\""
     }
 
     /// Removes characters XML 1.0 forbids (scraped text sometimes has them).

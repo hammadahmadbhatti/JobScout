@@ -243,6 +243,57 @@ private func isWellFormedXML(_ xml: String) -> Bool {
     }
 }
 
+// MARK: - Security hardening
+
+@Suite struct SecurityTests {
+    @Test func onlyWebLinksAreFetched() async {
+        #expect(HTTP.isWebURL(URL(string: "https://www.linkedin.com/jobs/view/1")!))
+        #expect(!HTTP.isWebURL(URL(string: "file:///etc/hosts")!))
+        #expect(!HTTP.isWebURL(URL(string: "smb://evil.example/share")!))
+        #expect(!HTTP.isWebURL(URL(string: "x-apple.systempreferences:com.apple.preference")!))
+        await #expect(throws: SourceError.self) {
+            _ = try await HTTP.get(URL(fileURLWithPath: "/etc/hosts"))
+        }
+        await #expect(throws: SourceError.self) {
+            _ = try await JobDetails.fromPage("file:///etc/hosts")
+        }
+    }
+
+    @Test func makeURLNeverCrashesOnOddInput() {
+        // Newer macOS percent-encodes the space; older returns nil. Either way: no crash, same host.
+        let odd = try? HTTP.makeURL("https://api.lever.co/v0/postings/my company")
+        #expect(odd == nil || odd?.host == "api.lever.co")
+        #expect(throws: SourceError.self) { try HTTP.makeURL("javascript:alert(1)") }
+        #expect(throws: SourceError.self) { try HTTP.makeURL("file:///etc/hosts") }
+    }
+
+    @Test func companySlugsCannotRedirectRequests() {
+        let c = ATSCompany(name: "X", ats: .recruitee, slug: "evil.example/#", host: "evil.example")
+        #expect(c.slug == "evilexample")
+        #expect(c.host == "")
+        let p = ATSCompany(name: "Acme", ats: .personio, slug: "acme", host: "Acme.jobs.personio.de")
+        #expect(p.host == "acme.jobs.personio.de")
+    }
+
+    @Test func csvFieldsCannotCarryFormulas() {
+        #expect(XLSX.csvField(#"=HYPERLINK("http://evil")"#) == #""'=HYPERLINK(""http://evil"")""#)
+        #expect(XLSX.csvField("+49 30 123") == #""'+49 30 123""#)
+        #expect(XLSX.csvField("@SUM(A1)") == #""'@SUM(A1)""#)
+        #expect(XLSX.csvField("Data Analyst") == #""Data Analyst""#)
+    }
+
+    @Test func onlyWebLinksBecomeExcelHyperlinks() {
+        let sheet = XLSX.Sheet(name: "S", rows: [[.link("https://example.com/job")], [.link("file:///etc/hosts")]])
+        let (_, links) = XLSX.sheetXML(sheet)
+        #expect(links.map(\.url) == ["https://example.com/job"])
+    }
+
+    @Test func indeedQueryEscapesBackslashesAndQuotes() {
+        let q = IndeedSource().buildQuery(SearchQuery(keywords: #"C:\ "quoted""#), cursor: nil)
+        #expect(q.contains(#"what: "C:\\ \"quoted\"""#))
+    }
+}
+
 // MARK: - Excel
 
 @Suite struct XLSXTests {

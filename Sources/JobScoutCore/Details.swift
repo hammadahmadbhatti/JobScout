@@ -93,7 +93,7 @@ public enum JobDetails {
 
     static func linkedIn(_ job: Job) async throws -> String {
         guard !job.jobID.isEmpty else { return try await fromPage(job.url) }
-        let url = URL(string: "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/\(job.jobID)")!
+        let url = try HTTP.makeURL("https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/\(job.jobID)")
         let html = try await HTTP.getString(url, headers: [
             "Accept": "text/html,application/xhtml+xml",
         ])
@@ -108,7 +108,7 @@ public enum JobDetails {
 
     static func indeed(_ job: Job) async throws -> String {
         if !job.descriptionText.isEmpty { return job.descriptionText }
-        let key = job.jobID.replacingOccurrences(of: "\"", with: "")
+        let key = job.jobID.filter { $0.isLetter || $0.isNumber }
         let query = """
         query { jobData(jobKeys: ["\(key)"]) { results { job { description { html } } } } }
         """
@@ -135,7 +135,7 @@ public enum JobDetails {
 
     static func arbeitsagentur(_ job: Job) async throws -> String {
         let encoded = Data(job.jobID.utf8).base64EncodedString()
-        let url = URL(string: "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobdetails/\(encoded)")!
+        let url = try HTTP.makeURL("https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobdetails/\(encoded)")
         struct Detail: Decodable { let stellenangebotsBeschreibung: String? }
         do {
             let data = try await HTTP.get(url, headers: ["X-API-Key": ArbeitsagenturSource.apiKey])
@@ -162,7 +162,7 @@ public enum JobDetails {
     }
 
     static func smartRecruiters(company: String, id: String) async throws -> String {
-        let url = URL(string: "https://api.smartrecruiters.com/v1/companies/\(company)/postings/\(id)")!
+        let url = try HTTP.makeURL("https://api.smartrecruiters.com/v1/companies/\(company)/postings/\(id)")
         struct Posting: Decodable {
             struct JobAd: Decodable { let sections: [String: Section]? }
             struct Section: Decodable { let title: String?; let text: String? }
@@ -181,7 +181,9 @@ public enum JobDetails {
     // MARK: Any job page — schema.org JobPosting, else the main content
 
     public static func fromPage(_ urlString: String) async throws -> String {
-        guard let url = URL(string: urlString) else { throw SourceError("Invalid job link.") }
+        guard let url = URL(string: urlString), HTTP.isWebURL(url) else {
+            throw SourceError("Invalid job link.")
+        }
         let html = try await HTTP.getString(url, headers: [
             "Accept": "text/html,application/xhtml+xml",
         ])

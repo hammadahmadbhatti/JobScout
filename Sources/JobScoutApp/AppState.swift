@@ -519,8 +519,10 @@ final class AppState: ObservableObject {
 
     // MARK: Open / copy
 
+    /// Opens a posting in the browser. Links come from job sites and feeds,
+    /// so only http(s) is allowed (no file:, app or other custom schemes).
     func open(_ job: Job) {
-        guard let url = URL(string: job.url) else { return }
+        guard let url = URL(string: job.url), HTTP.isWebURL(url) else { return }
         NSWorkspace.shared.open(url)
     }
 
@@ -553,9 +555,7 @@ final class AppState: ObservableObject {
     }
 
     static func csv(_ jobs: [Job], applications: [TrackedApplication?]) -> String {
-        func esc(_ s: String) -> String {
-            "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\""
-        }
+        let esc = XLSX.csvField
         let df = ISO8601DateFormatter()
         var rows = ["source,title,company,location,posted,salary,employment_type,remote,language,applied_status,url"]
         for (j, app) in zip(jobs, applications) {
