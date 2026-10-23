@@ -4,7 +4,8 @@ import Foundation
 ///
 /// This is the same API the official site (jobsuche.arbeitsagentur.de) calls.
 /// The `X-API-Key` is the public client id embedded in that site's own
-/// frontend config, not a secret. Verified working 2026-07.
+/// frontend config, not a secret. Verified working 2026-10.
+/// Germany only — searching without `wo` covers the whole country.
 public struct ArbeitsagenturSource: JobSource {
     public let name = "arbeitsagentur"
 
@@ -64,10 +65,6 @@ public struct ArbeitsagenturSource: JobSource {
             ("size", String(size)),
         ]
         if !query.keywords.isEmpty { p.append(("was", query.keywords)) }
-        if !query.location.isEmpty {
-            p.append(("wo", query.location))
-            p.append(("umkreis", String(query.radiusKm)))
-        }
         if let days = query.datePosted.days {
             p.append(("veroeffentlichtseit", String(days)))
         }

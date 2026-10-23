@@ -2,9 +2,12 @@ import Foundation
 import JobScoutCore
 
 // Minimal CLI for testing the engine headlessly:
-//   jobscout-cli search --keywords Koch --location Berlin \
+//   jobscout-cli search --keywords "data analyst" --country DE \
 //       --sources linkedin,arbeitsagentur,indeed,xing,stepstone \
-//       --date week --limit 10 --lang de --types part-time --json
+//       --date week --limit 10 --types full-time [--any-language] \
+//       [--details 5] [--json]
+//   jobscout-cli countries
+//   jobscout-cli export-applications [--out path.xlsx]
 //   jobscout-cli detect-ats "Zalando"
 //   jobscout-cli company-jobs --ats greenhouse --slug gitlab
 
@@ -42,6 +45,29 @@ func printJobs(_ jobs: [Job], json: Bool) {
 let mode = CommandLine.arguments.dropFirst().first ?? "search"
 
 switch mode {
+case "countries":
+    for c in Countries.all {
+        let boards = SourceRegistry.platformNames.filter { SourceRegistry.isAvailable($0, in: c) }
+        print("\(c.code)  \(c.label.padding(toLength: 26, withPad: " ", startingAt: 0)) \(boards.joined(separator: ", "))")
+    }
+
+case "export-applications":
+    // Rebuilds the Excel sheet from the app's saved applications.
+    let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    let input = URL(fileURLWithPath: arg("in")
+        ?? support.appendingPathComponent("JobScout/applications.json").path)
+    let output = URL(fileURLWithPath: arg("out") ?? "Job Applications.xlsx")
+    do {
+        let dec = JSONDecoder()
+        dec.dateDecodingStrategy = .iso8601
+        let apps = try dec.decode([TrackedApplication].self, from: Data(contentsOf: input))
+        try ApplicationsWorkbook.build(apps).write(to: output, options: .atomic)
+        print("✅ \(apps.count) applications → \(output.path)")
+    } catch {
+        print("error: \(error)")
+        exit(1)
+    }
+
 case "detect-ats":
     let name = CommandLine.arguments.dropFirst(2).first ?? ""
     guard !name.isEmpty else {
@@ -84,14 +110,17 @@ case "company-jobs":
 default: // search
     var query = SearchQuery()
     query.keywords = arg("keywords") ?? ""
-    query.location = arg("location") ?? ""
+    if let c = arg("country") {
+        guard let country = Countries.find(c) else {
+            print("unknown country '\(c)' — run `jobscout-cli countries`")
+            exit(1)
+        }
+        query.country = country
+    }
     query.limit = Int(arg("limit") ?? "15") ?? 15
-    query.radiusKm = Int(arg("radius") ?? "25") ?? 25
+    query.englishOnly = !flag("any-language")
     if let d = arg("date") {
         query.datePosted = DatePosted(rawValue: d) ?? .any
-    }
-    if let langs = arg("lang") {
-        query.languages = Set(langs.split(separator: ",").map(String.init))
     }
     if let types = arg("types") {
         query.jobTypes = Set(types.split(separator: ",").compactMap { JobType(rawValue: String($0)) })
@@ -99,7 +128,12 @@ default: // search
     if let exp = arg("experience") {
         query.experience = Set(exp.split(separator: ",").compactMap { ExperienceLevel(rawValue: String($0)) })
     }
-    let sourceNames = (arg("sources") ?? "arbeitsagentur").split(separator: ",").map(String.init)
+    let sourceNames = (arg("sources") ?? "linkedin,indeed").split(separator: ",").map(String.init)
+        .filter { name in
+            let ok = SourceRegistry.isAvailable(name, in: query.country)
+            if !ok { print("–  \(name): \(SourceRegistry.availabilityNote(name) ?? "not available") — skipped") }
+            return ok
+        }
     let sources = SourceRegistry.make(names: sourceNames)
     guard !sources.isEmpty else {
         print("no valid sources; choose from: \(SourceRegistry.platformNames.joined(separator: ", "))")
@@ -119,7 +153,25 @@ default: // search
         }
         print("")
         printJobs(result.jobs, json: flag("json"))
-        print("— \(result.jobs.count) after merge/filters")
+        print("— \(result.jobs.count) after merge/filters (\(result.hiddenNonEnglish) non-English postings hidden)")
+
+        // --details N: fetch full descriptions and check language + German requirement.
+        let detailCount = Int(arg("details") ?? "0") ?? 0
+        if detailCount > 0 {
+            print("\nFull descriptions:")
+            for job in result.jobs.prefix(detailCount) {
+                do {
+                    let text = try await JobDetails.description(for: job)
+                    let verdict = LanguageDetector.verdict(for: job, description: text)
+                    let (req, snippet) = GermanRequirement.detect(in: text)
+                    print("✓ [\(job.source)] \(job.title) — \(text.count) chars, \(verdict.rawValue), \(req.label)\(snippet.map { " «\($0)»" } ?? "")")
+                    print("   " + text.prefix(160).replacingOccurrences(of: "\n", with: " ⏎ "))
+                } catch {
+                    let msg = (error as? HTTPError)?.description ?? (error as? SourceError)?.message ?? "\(error)"
+                    print("✗ [\(job.source)] \(job.title) — \(msg)")
+                }
+            }
+        }
         sem.signal()
     }
     sem.wait()

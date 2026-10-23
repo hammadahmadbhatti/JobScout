@@ -16,5 +16,6 @@ let package = Package(
         .target(name: "JobScoutCore", dependencies: ["SwiftSoup"]),
         .executableTarget(name: "JobScoutCLI", dependencies: ["JobScoutCore"]),
         .executableTarget(name: "JobScoutApp", dependencies: ["JobScoutCore"]),
+        .testTarget(name: "JobScoutCoreTests", dependencies: ["JobScoutCore"]),
     ]
 )

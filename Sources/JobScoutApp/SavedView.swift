@@ -19,7 +19,7 @@ struct SavedView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 HSplitView {
-                    List(state.favorites, selection: $state.selectedJobID) { job in
+                    List(state.favorites, selection: $state.selection) { job in
                         JobRow(job: job).tag(job.id)
                     }
                     .frame(minWidth: 400, idealWidth: 520)
@@ -28,6 +28,9 @@ struct SavedView: View {
                     if let job = state.selectedJob {
                         JobDetailView(job: job)
                             .frame(minWidth: 340, idealWidth: 420)
+                    } else if state.selection.count > 1 {
+                        BulkSelectionView(jobs: state.selectedJobs(in: state.favorites))
+                            .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         VStack {
                             Text("Select a saved job")

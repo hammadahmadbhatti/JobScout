@@ -6,6 +6,10 @@ import SwiftSoup
 /// `<article data-testid="job-search-result">` whose visible text runs in a
 /// stable order: title, company, location, [+ N weitere], employment type,
 /// [salary…], "Job merken".
+///
+/// Since 2026-10 Xing redirects searches to its AI search, which ignores the
+/// location parameter, so results are placed into the selected country
+/// afterwards from their location text (Xing is DACH-only anyway).
 public struct XingSource: JobSource {
     public let name = "xing"
 
@@ -30,10 +34,6 @@ public struct XingSource: JobSource {
 
     func params(_ query: SearchQuery, page: Int) -> [(String, String)] {
         var p: [(String, String)] = [("keywords", query.keywords)]
-        if !query.location.isEmpty {
-            p.append(("location", query.location))
-            p.append(("radius", String(query.radiusKm)))
-        }
         if let sp = sincePeriod(query.datePosted) { p.append(("sincePeriod", sp)) }
         if page > 1 { p.append(("page", String(page))) }
         return p
@@ -60,6 +60,8 @@ public struct XingSource: JobSource {
             let badges = [
                 "Job merken", "–", "Zu den Ersten gehören", "Be one of the first",
                 "Schnelle Bewerbung", "Easy apply", "Neu", "New", "Top-Arbeitgeber",
+                "Dringend gesucht", "Urgently hiring", "Urgently needed", "Top employer",
+                "Letzte Chance", "Last chance",
             ]
             texts.removeAll { t in
                 badges.contains(t) || t.hasPrefix("+ ") || t == title
@@ -98,7 +100,8 @@ public struct XingSource: JobSource {
         var jobs: [Job] = []
         var seen = Set<String>()
         var page = 1
-        while jobs.count < query.limit && page <= 5 {
+        let maxPages = min(max(query.limit / 20 + 1, 5), 25)
+        while jobs.count < query.limit && page <= maxPages {
             let url = HTTP.url(Self.base, params(query, page: page))
             let html = try await HTTP.getString(url, headers: [
                 "Accept": "text/html,application/xhtml+xml",
@@ -107,8 +110,9 @@ public struct XingSource: JobSource {
             if cards.isEmpty { break }
             var added = 0
             for job in cards where seen.insert(job.jobID).inserted {
-                jobs.append(job)
                 added += 1
+                guard Countries.place(job.location, in: query.country) != .elsewhere else { continue }
+                jobs.append(job)
                 if jobs.count >= query.limit { break }
             }
             if added == 0 { break }

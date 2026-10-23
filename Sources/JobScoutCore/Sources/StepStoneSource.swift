@@ -7,12 +7,13 @@ import SwiftSoup
 ///
 /// StepStone sits behind bot protection; plain requests currently pass, but if
 /// it blocks, the source reports an honest error rather than silently failing.
+/// Germany only: searching without a location covers all of stepstone.de.
 public struct StepStoneSource: JobSource {
     public let name = "stepstone"
 
     public init() {}
 
-    /// StepStone route style: /jobs/{what}/in-{where}?radius=30
+    /// StepStone route style: /jobs/{what}
     func searchURL(_ query: SearchQuery, page: Int) -> URL {
         func slug(_ s: String) -> String {
             let map: [Character: String] = [
@@ -28,9 +29,8 @@ public struct StepStoneSource: JobSource {
             while out.contains("--") { out = out.replacingOccurrences(of: "--", with: "-") }
             return out.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         }
-        var path = "https://www.stepstone.de/jobs/\(slug(query.keywords.isEmpty ? "jobs" : query.keywords))"
-        if !query.location.isEmpty { path += "/in-\(slug(query.location))" }
-        var params: [(String, String)] = [("radius", String(query.radiusKm))]
+        let path = "https://www.stepstone.de/jobs/\(slug(query.keywords.isEmpty ? "jobs" : query.keywords))"
+        var params: [(String, String)] = []
         if page > 1 { params.append(("page", String(page))) }
         if query.datePosted != .any {
             params.append(("sort", "2")) // newest first, pairs with timeago post-filter
@@ -64,13 +64,13 @@ public struct StepStoneSource: JobSource {
                 source: name,
                 jobID: jobID,
                 title: title,
-                company: company ?? "",
-                location: location ?? "",
+                company: company,
+                location: location,
                 url: href,
-                postedDateRaw: timeago ?? "",
-                posted: DateParsing.parseRelative(timeago ?? ""),
-                remote: wfh ?? "",
-                salary: salary ?? ""
+                postedDateRaw: timeago,
+                posted: DateParsing.parseRelative(timeago),
+                remote: wfh,
+                salary: salary
             ))
         }
         return jobs
@@ -80,7 +80,8 @@ public struct StepStoneSource: JobSource {
         var jobs: [Job] = []
         var seen = Set<String>()
         var page = 1
-        while jobs.count < query.limit && page <= 5 {
+        let maxPages = min(max(query.limit / 25 + 1, 5), 20)
+        while jobs.count < query.limit && page <= maxPages {
             let html: String
             do {
                 html = try await HTTP.getString(searchURL(query, page: page), headers: [

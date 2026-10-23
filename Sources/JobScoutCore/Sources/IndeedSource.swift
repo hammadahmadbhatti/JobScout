@@ -1,5 +1,4 @@
 import Foundation
-import SwiftSoup
 
 /// Indeed — the mobile app's public GraphQL API (no login, no paid key).
 ///
@@ -9,22 +8,11 @@ import SwiftSoup
 /// an honest error instead of fake results.
 public struct IndeedSource: JobSource {
     public let name = "indeed"
-    let country: String // "DE", "AT", "CH", "US", "GB", ...
 
-    public init(country: String = "DE") {
-        self.country = country.uppercased()
-    }
+    public init() {}
 
     static let apiURL = URL(string: "https://apis.indeed.com/graphql")!
     static let apiKey = "161092c2017b5bbab13edb12461a62d5a833871e7cad6d9d475304573de67ac8"
-
-    var domain: String {
-        switch country {
-        case "US": return "www"
-        case "GB", "UK": return "uk"
-        default: return country.lowercased()
-        }
-    }
 
     static let jobTypeKeys: [JobType: String] = [
         .fullTime: "CF3CP", .partTime: "75GKK",
@@ -32,45 +20,53 @@ public struct IndeedSource: JobSource {
     ]
     static let remoteKey = "DSQF7"
 
-    func headers() -> [String: String] {
+    /// The country decides which national Indeed the API searches; the
+    /// English locale makes Indeed label things in English.
+    static func headers(country: Country) -> [String: String] {
         [
-            "indeed-api-key": Self.apiKey,
+            "indeed-api-key": apiKey,
             "accept": "application/json",
-            "indeed-locale": "de-DE",
+            "indeed-locale": "en-\(country.code)",
             "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6_1 like Mac OS X) "
                 + "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Indeed App 193.1",
             "indeed-app-info": "appv=193.1; appid=com.indeed.jobsearch; osv=16.6.1; os=ios; dtype=phone",
-            "indeed-co": country,
+            "indeed-co": country.code,
         ]
     }
 
+    /// Indeed allows one filter type per request: either a date window or a
+    /// composite of keyword filters. English-only (Indeed's own per-job
+    /// language tag) and job types go into the composite; a date window is
+    /// then applied afterwards using the exact publish dates.
     func buildFilters(_ query: SearchQuery) -> String {
-        if let days = query.datePosted.days {
-            return """
-            filters: { date: { field: "dateOnIndeed", start: "\(days * 24)h" } }
-            """
+        var keywordFilters: [String] = []
+        if query.englishOnly {
+            keywordFilters.append(#"{ keyword: { field: "language", keys: ["en"] } }"#)
         }
         var keys = query.jobTypes.compactMap { Self.jobTypeKeys[$0] }
         if query.remote.contains(.remote) { keys.append(Self.remoteKey) }
-        guard !keys.isEmpty else { return "" }
-        let joined = keys.sorted().map { "\"\($0)\"" }.joined(separator: ", ")
-        return """
-        filters: { composite: { filters: [{ keyword: { field: "attributes", keys: [\(joined)] } }] } }
-        """
+        if !keys.isEmpty {
+            let joined = keys.sorted().map { "\"\($0)\"" }.joined(separator: ", ")
+            keywordFilters.append(#"{ keyword: { field: "attributes", keys: [\#(joined)] } }"#)
+        }
+        if !keywordFilters.isEmpty {
+            return "filters: { composite: { filters: [\(keywordFilters.joined(separator: ", "))] } }"
+        }
+        if let days = query.datePosted.days {
+            return #"filters: { date: { field: "dateOnIndeed", start: "\#(days * 24)h" } }"#
+        }
+        return ""
     }
 
     func buildQuery(_ query: SearchQuery, cursor: String?) -> String {
         let term = query.keywords.replacingOccurrences(of: "\"", with: "\\\"")
         let what = term.isEmpty ? "" : "what: \"\(term)\""
-        let loc = query.location.isEmpty ? "" : """
-        location: {where: "\(query.location.replacingOccurrences(of: "\"", with: "\\\""))", radius: \(query.radiusKm), radiusUnit: KILOMETERS}
-        """
         let cur = cursor.map { "cursor: \"\($0)\"" } ?? ""
+        // No location: the whole country (selected via the indeed-co header).
         return """
         query GetJobData {
             jobSearch(
                 \(what)
-                \(loc)
                 limit: 100
                 \(cur)
                 sort: DATE
@@ -81,6 +77,7 @@ public struct IndeedSource: JobSource {
                     job {
                         key
                         title
+                        language
                         datePublished
                         employer { name }
                         location { formatted { long } }
@@ -108,6 +105,7 @@ public struct IndeedSource: JobSource {
         struct GQLJob: Decodable {
             let key: String?
             let title: String?
+            let language: String?
             let datePublished: Double?
             let employer: Employer?
             let location: Location?
@@ -152,17 +150,15 @@ public struct IndeedSource: JobSource {
         return parts.joined(separator: "–") + " " + cur + suffix
     }
 
-    func toJob(_ g: GQLResponse.GQLJob) -> Job? {
+    func toJob(_ g: GQLResponse.GQLJob, country: Country) -> Job? {
         guard let key = g.key, let title = g.title, !title.isEmpty else { return nil }
         var posted: Date?
         if let ms = g.datePublished {
             posted = Date(timeIntervalSince1970: ms / 1000)
         }
         var descText = ""
-        if let html = g.description?.html,
-           let doc = try? SwiftSoup.parse(html),
-           let text = try? doc.text() {
-            descText = String(text.prefix(3000))
+        if let html = g.description?.html {
+            descText = HTMLText.plain(html)
         }
         let attrs = (g.attributes ?? []).compactMap(\.label)
         let knownTypes = ["Vollzeit", "Teilzeit", "Full-time", "Part-time", "Minijob", "Festanstellung", "Praktikum", "Werkstudent"]
@@ -174,13 +170,14 @@ public struct IndeedSource: JobSource {
             title: title,
             company: g.employer?.name ?? "",
             location: g.location?.formatted?.long ?? "",
-            url: "https://\(domain).indeed.com/viewjob?jk=\(key)",
+            url: "https://\(country.indeedSubdomain).indeed.com/viewjob?jk=\(key)",
             postedDateRaw: posted.map { ISO8601DateFormatter().string(from: $0) } ?? "",
             posted: posted,
             remote: isRemote ? "Remote/Homeoffice" : "",
             salary: salaryText(g.compensation),
             employmentType: types.joined(separator: ", "),
-            descriptionText: descText
+            descriptionText: descText,
+            languageHint: g.language
         )
     }
 
@@ -188,17 +185,25 @@ public struct IndeedSource: JobSource {
         var jobs: [Job] = []
         var cursor: String?
         var pages = 0
-        while jobs.count < query.limit && pages < 5 {
+        let filters = buildFilters(query)
+        let postFilterDate = query.datePosted.cutoff != nil && !filters.contains("dateOnIndeed")
+        let maxPages = min(max(query.limit / 50, 3), 15)
+        while jobs.count < query.limit && pages < maxPages {
             let payload = try JSONSerialization.data(
                 withJSONObject: ["query": buildQuery(query, cursor: cursor)])
-            let data = try await HTTP.postJSON(Self.apiURL, body: payload, headers: headers())
+            let data = try await HTTP.postJSON(
+                Self.apiURL, body: payload, headers: Self.headers(country: query.country))
             let resp = try JSONDecoder().decode(GQLResponse.self, from: data)
             if let errs = resp.errors, !errs.isEmpty, resp.data?.jobSearch == nil {
                 throw SourceError("Indeed API error: \(errs.first?.message ?? "unknown")")
             }
             let results = resp.data?.jobSearch?.results ?? []
             if results.isEmpty { break }
-            jobs.append(contentsOf: results.compactMap { $0.job.flatMap(toJob) })
+            var page = results.compactMap { $0.job.flatMap { toJob($0, country: query.country) } }
+            if postFilterDate, let cutoff = query.datePosted.cutoff {
+                page = page.filter { ($0.posted ?? .distantFuture) >= cutoff }
+            }
+            jobs.append(contentsOf: page)
             cursor = resp.data?.jobSearch?.pageInfo?.nextCursor
             if cursor == nil { break }
             pages += 1

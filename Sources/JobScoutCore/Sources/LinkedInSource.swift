@@ -7,7 +7,7 @@ public struct LinkedInSource: JobSource {
     public let name = "linkedin"
     let delaySeconds: Double
 
-    public init(delaySeconds: Double = 1.0) {
+    public init(delaySeconds: Double = 0.8) {
         self.delaySeconds = delaySeconds
     }
 
@@ -35,7 +35,8 @@ public struct LinkedInSource: JobSource {
             ("start", String(start)),
             ("sortBy", "DD"),
         ]
-        if !query.location.isEmpty { p.append(("location", query.location)) }
+        // A country name is a valid LinkedIn location and covers the whole country.
+        p.append(("location", query.country.name))
         if let tpr = Self.dateCodes[query.datePosted] { p.append(("f_TPR", tpr)) }
         let exp = Set(query.experience.flatMap { Self.experienceCodes[$0] ?? [] })
         if !exp.isEmpty { p.append(("f_E", exp.sorted().joined(separator: ","))) }

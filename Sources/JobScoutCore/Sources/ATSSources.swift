@@ -61,6 +61,13 @@ public enum ATSClient {
                 .filter { $0.tagName() == "office" }
                 .compactMap { try? $0.text() }
             let created = (try? pos.select("createdAt").first()?.text()) ?? ""
+            let sections = (try? pos.select("jobDescription").array()) ?? []
+            let description = sections.compactMap { section -> String? in
+                let heading = (try? section.select("name").first()?.text()) ?? ""
+                let body = HTMLText.plain((try? section.select("value").first()?.text()) ?? "")
+                guard !body.isEmpty else { return nil }
+                return heading.isEmpty ? body : "\(heading)\n\(body)"
+            }.joined(separator: "\n\n")
             jobs.append(Job(
                 source: "career-site",
                 jobID: "personio-\(c.slug)-\(id.isEmpty ? title : id)",
@@ -70,7 +77,8 @@ public enum ATSClient {
                 url: "https://\(host)/job/\(id)",
                 postedDateRaw: created,
                 posted: DateParsing.parse(created),
-                employmentType: (try? pos.select("schedule").first()?.text()) ?? ""
+                employmentType: (try? pos.select("schedule").first()?.text()) ?? "",
+                descriptionText: description
             ))
         }
         return jobs
@@ -85,13 +93,14 @@ public enum ATSClient {
             let absolute_url: String?
             let updated_at: String?
             let location: GHLocation?
+            let content: String?
         }
         struct GHLocation: Decodable { let name: String? }
         let jobs: [GHJob]?
     }
 
     static func greenhouse(_ c: ATSCompany) async throws -> [Job] {
-        let url = URL(string: "https://boards-api.greenhouse.io/v1/boards/\(c.slug)/jobs")!
+        let url = URL(string: "https://boards-api.greenhouse.io/v1/boards/\(c.slug)/jobs?content=true")!
         let data = try await HTTP.get(url)
         let resp = try JSONDecoder().decode(GHResponse.self, from: data)
         return (resp.jobs ?? []).compactMap { j in
@@ -104,7 +113,8 @@ public enum ATSClient {
                 location: j.location?.name ?? "",
                 url: j.absolute_url ?? "",
                 postedDateRaw: j.updated_at ?? "",
-                posted: DateParsing.parse(j.updated_at ?? "")
+                posted: DateParsing.parse(j.updated_at ?? ""),
+                descriptionText: HTMLText.plain(j.content ?? "")
             )
         }
     }
@@ -117,6 +127,13 @@ public enum ATSClient {
         let hostedUrl: String?
         let createdAt: Double?
         let categories: LeverCategories?
+        let descriptionPlain: String?
+        let lists: [LeverList]?
+        let additionalPlain: String?
+    }
+    struct LeverList: Decodable {
+        let text: String?
+        let content: String?
     }
     struct LeverCategories: Decodable {
         let location: String?
@@ -130,6 +147,13 @@ public enum ATSClient {
         return list.compactMap { j in
             guard let title = j.text else { return nil }
             let posted = j.createdAt.map { Date(timeIntervalSince1970: $0 / 1000) }
+            let lists = (j.lists ?? []).map { list in
+                [list.text ?? "", HTMLText.plain(list.content ?? "")]
+                    .filter { !$0.isEmpty }.joined(separator: "\n")
+            }
+            let description = ([j.descriptionPlain ?? ""] + lists + [j.additionalPlain ?? ""])
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }.joined(separator: "\n\n")
             return Job(
                 source: "career-site",
                 jobID: "lever-\(c.slug)-\(j.id ?? title)",
@@ -139,7 +163,8 @@ public enum ATSClient {
                 url: j.hostedUrl ?? "",
                 postedDateRaw: "",
                 posted: posted,
-                employmentType: j.categories?.commitment ?? ""
+                employmentType: j.categories?.commitment ?? "",
+                descriptionText: description
             )
         }
     }
@@ -155,6 +180,8 @@ public enum ATSClient {
             let careers_url: String?
             let created_at: String?
             let employment_type_code: String?
+            let description: String?
+            let requirements: String?
         }
         let offers: [Offer]?
     }
@@ -174,7 +201,10 @@ public enum ATSClient {
                 url: o.careers_url ?? "https://\(c.slug).recruitee.com/o/\(o.slug ?? "")",
                 postedDateRaw: o.created_at ?? "",
                 posted: DateParsing.parse(o.created_at ?? ""),
-                employmentType: o.employment_type_code ?? ""
+                employmentType: o.employment_type_code ?? "",
+                descriptionText: [o.description, o.requirements]
+                    .map { HTMLText.plain($0 ?? "") }
+                    .filter { !$0.isEmpty }.joined(separator: "\n\n")
             )
         }
     }
@@ -317,13 +347,9 @@ public struct CompanyWatchlistSource: JobSource {
         self.companies = companies
     }
 
-    public func search(_ query: SearchQuery) async throws -> [Job] {
-        guard !companies.isEmpty else { return [] }
-        let keywordTokens = query.keywords.lowercased()
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { $0.count >= 2 }
-
-        let all: [Job] = await withTaskGroup(of: [Job].self) { group in
+    /// Every open position of every watched company, in any country.
+    public func allJobs() async -> [Job] {
+        await withTaskGroup(of: [Job].self) { group in
             for company in companies {
                 group.addTask {
                     (try? await ATSClient.fetchJobs(for: company)) ?? []
@@ -333,8 +359,17 @@ public struct CompanyWatchlistSource: JobSource {
             for await jobs in group { out += jobs }
             return out
         }
+    }
 
-        var filtered = all
+    public func search(_ query: SearchQuery) async throws -> [Job] {
+        guard !companies.isEmpty else { return [] }
+        let keywordTokens = query.keywords.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count >= 2 }
+
+        var filtered = await allJobs().filter {
+            Countries.place($0.location, in: query.country) != .elsewhere
+        }
         if !keywordTokens.isEmpty {
             filtered = filtered.filter { job in
                 let t = job.title.lowercased()

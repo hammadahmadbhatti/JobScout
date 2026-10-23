@@ -18,12 +18,16 @@ public struct Job: Codable, Identifiable, Hashable, Sendable {
     public var salary: String
     public var employmentType: String
     public var descriptionText: String
+    /// Posting language as reported by the source itself ("en", "de", …), when
+    /// it tells us (Indeed does). Optional so older saved files still decode.
+    public var languageHint: String?
 
     public init(
         source: String, jobID: String, title: String, company: String,
         location: String, url: String, postedDateRaw: String = "",
         posted: Date? = nil, remote: String = "", salary: String = "",
-        employmentType: String = "", descriptionText: String = ""
+        employmentType: String = "", descriptionText: String = "",
+        languageHint: String? = nil
     ) {
         self.source = source
         self.jobID = jobID
@@ -37,17 +41,50 @@ public struct Job: Codable, Identifiable, Hashable, Sendable {
         self.salary = salary
         self.employmentType = employmentType
         self.descriptionText = descriptionText
+        self.languageHint = languageHint
     }
 
-    /// Identity for cross-source de-duplication.
+    /// Identity for cross-source de-duplication: company + title + city.
+    /// Sites format locations differently ("10117 Berlin", "Berlin, Berlin,
+    /// Germany"), so only the first real word of the location counts.
     public func dedupKey() -> String {
-        func norm(_ s: String) -> String {
-            s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        }
-        return "\(norm(company))|\(norm(title))|\(norm(location))"
+        let city = location
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            .components(separatedBy: CharacterSet.letters.inverted)
+            .first(where: { $0.count >= 2 }) ?? ""
+        return "\(trackingKey)|\(city)"
     }
 
-    public var detectedLanguage: String { LanguageDetector.detect(title) }
+    /// Identity for "have I applied to this already?" across sources: the
+    /// same posting on LinkedIn and Indeed shares company + title, while the
+    /// location is formatted differently by every site.
+    public var trackingKey: String {
+        "\(Self.normalizeCompany(company))|\(Self.normalizeTitle(title))"
+    }
+
+    static func normalizeTitle(_ s: String) -> String {
+        var t = s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        // Drop gender markers: "(m/w/d)", "(all genders)", "(gn)", "m/f/d" …
+        t = t.replacingOccurrences(
+            of: #"\([^)]*(/|gender|gn\b|divers)[^)]*\)"#, with: " ", options: .regularExpression)
+        t = t.replacingOccurrences(
+            of: #"\b[mwfdx](\s*/\s*[mwfdx]){1,3}\b"#, with: " ", options: .regularExpression)
+        return t.components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    static let legalForms: Set<String> = [
+        "gmbh", "ag", "se", "kg", "co", "kgaa", "ug", "ev", "mbh", "ltd", "limited",
+        "inc", "llc", "plc", "bv", "nv", "sa", "sarl", "sas", "spa", "ab", "as", "oy",
+        "group", "gruppe",
+    ]
+
+    static func normalizeCompany(_ s: String) -> String {
+        s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty && !legalForms.contains($0) }
+            .joined(separator: " ")
+    }
 }
 
 public enum DatePosted: String, CaseIterable, Codable, Sendable {
@@ -118,33 +155,33 @@ public enum RemoteType: String, CaseIterable, Codable, Sendable {
     }
 }
 
-/// A platform-agnostic search request.
+/// A platform-agnostic search request. Searches always cover a whole
+/// country — there is deliberately no city or radius.
 public struct SearchQuery: Sendable {
     public var keywords: String
-    public var location: String
-    public var radiusKm: Int
+    public var country: Country
     public var datePosted: DatePosted
     public var jobTypes: Set<JobType>
     public var experience: Set<ExperienceLevel>
     public var remote: Set<RemoteType>
-    /// Wanted posting languages ("de", "en"); empty = all.
-    public var languages: Set<String>
+    /// Keep only postings written in English (JobScout's default focus).
+    public var englishOnly: Bool
+    /// Maximum results per source and keyword.
     public var limit: Int
 
     public init(
-        keywords: String = "", location: String = "", radiusKm: Int = 25,
+        keywords: String = "", country: Country = .germany,
         datePosted: DatePosted = .any, jobTypes: Set<JobType> = [],
         experience: Set<ExperienceLevel> = [], remote: Set<RemoteType> = [],
-        languages: Set<String> = [], limit: Int = 50
+        englishOnly: Bool = true, limit: Int = 100
     ) {
         self.keywords = keywords
-        self.location = location
-        self.radiusKm = radiusKm
+        self.country = country
         self.datePosted = datePosted
         self.jobTypes = jobTypes
         self.experience = experience
         self.remote = remote
-        self.languages = languages
+        self.englishOnly = englishOnly
         self.limit = limit
     }
 }
@@ -171,9 +208,12 @@ public struct SourceStatus: Sendable, Hashable, Identifiable {
 public struct SearchResult: Sendable {
     public let jobs: [Job]
     public let statuses: [SourceStatus]
+    /// Postings dropped because they are not in English (English-only mode).
+    public let hiddenNonEnglish: Int
 
-    public init(jobs: [Job], statuses: [SourceStatus]) {
+    public init(jobs: [Job], statuses: [SourceStatus], hiddenNonEnglish: Int = 0) {
         self.jobs = jobs
         self.statuses = statuses
+        self.hiddenNonEnglish = hiddenNonEnglish
     }
 }

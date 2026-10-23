@@ -4,24 +4,30 @@ import JobScoutCore
 struct SettingsView: View {
     @EnvironmentObject var state: AppState
 
-    static let indeedCountries = [
-        ("DE", "Germany"), ("AT", "Austria"), ("CH", "Switzerland"),
-        ("NL", "Netherlands"), ("FR", "France"), ("PL", "Poland"),
-        ("GB", "United Kingdom"), ("US", "United States"),
-    ]
-
     var body: some View {
         Form {
-            Picker("Indeed country:", selection: state.$indeedCountry) {
-                ForEach(Self.indeedCountries, id: \.0) { code, name in
-                    Text(name).tag(code)
-                }
-            }
-            .help("Which national Indeed site to search and link to")
-
             Stepper(
                 "Results per source & keyword: \(state.limitPerSource)",
-                value: $state.limitPerSource, in: 10...100, step: 10)
+                value: $state.limitPerSource, in: 25...500, step: 25)
+                .help("More results take longer: LinkedIn, Xing and StepStone load page by page with polite pauses.")
+
+            Toggle("Confirm English postings from the full description", isOn: $state.verifyLanguage)
+                .help("After each search, JobScout reads the description of postings whose title looks English and hides the ones written in another language. Turn off to save time and data; titles alone are then used.")
+
+            LabeledContent("Applications sheet:") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(state.excelPath.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                        .font(.caption)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                    HStack {
+                        Button("Change…") { state.chooseExcelLocation() }
+                        Button("Reset") { state.excelPath = AppState.defaultExcelPath }
+                            .disabled(state.excelPath == AppState.defaultExcelPath)
+                    }
+                    .controlSize(.small)
+                }
+            }
 
             Text("All sources are free public endpoints — no API keys needed. Scraped sites can change or rate-limit at any time; failing sources show an honest ⚠️ instead of fake results.")
                 .font(.caption)
@@ -29,6 +35,6 @@ struct SettingsView: View {
                 .frame(maxWidth: 380)
         }
         .padding(20)
-        .frame(width: 460)
+        .frame(width: 520)
     }
 }

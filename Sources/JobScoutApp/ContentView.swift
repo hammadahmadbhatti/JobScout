@@ -11,15 +11,8 @@ struct ContentView: View {
                     HStack {
                         Text(item.label)
                         Spacer()
-                        if item == .saved && !state.favorites.isEmpty {
-                            Text("\(state.favorites.count)")
-                                .font(.caption2)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Capsule().fill(Color.secondary.opacity(0.2)))
-                        }
-                        if item == .companies && !state.watchlist.isEmpty {
-                            Text("\(state.watchlist.count)")
+                        if let count = badgeCount(item), count > 0 {
+                            Text("\(count)")
                                 .font(.caption2)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
@@ -35,11 +28,22 @@ struct ContentView: View {
         } detail: {
             switch state.sidebar ?? .search {
             case .search: SearchView()
+            case .applications: ApplicationsView()
             case .companies: WatchlistView()
             case .saved: SavedView()
             }
         }
         .navigationTitle("JobScout")
+        .onChange(of: state.sidebar) { _ in state.selection = [] }
+    }
+
+    func badgeCount(_ item: SidebarItem) -> Int? {
+        switch item {
+        case .search: return nil
+        case .applications: return state.applications.count
+        case .companies: return state.watchlist.count
+        case .saved: return state.favorites.count
+        }
     }
 }
 
@@ -68,17 +72,83 @@ struct SourceBadge: View {
     }
 }
 
+extension ApplicationDecision {
+    var color: Color {
+        switch self {
+        case .pending: return .blue
+        case .offer, .accepted: return .green
+        case .rejected: return .red
+        case .declined, .withdrawn, .noResponse: return .gray
+        }
+    }
+}
+
+/// "✓ Applied 12 Oct · Interview" — shown wherever a job you applied to appears.
+struct AppliedBadge: View {
+    let application: TrackedApplication
+
+    var body: some View {
+        let d = application.decision
+        let text = d == .pending ? application.stage.label : d.label
+        HStack(spacing: 3) {
+            Image(systemName: d.isClosed && d != .accepted ? "checkmark.circle" : "checkmark.circle.fill")
+            Text("Applied \(application.appliedOn.formatted(.dateTime.day().month(.abbreviated))) · \(text)")
+        }
+        .font(.caption2.weight(.semibold))
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(Capsule().fill(d.color.opacity(0.16)))
+        .foregroundStyle(d.color)
+        .help("You applied on \(application.appliedOn.formatted(date: .long, time: .omitted)). Status: \(application.stage.label). Decision: \(d.label).")
+    }
+}
+
+struct GermanTag: View {
+    let requirement: GermanRequirement
+
+    var body: some View {
+        switch requirement {
+        case .required:
+            Text("German required")
+                .font(.caption2.weight(.semibold))
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(Capsule().fill(Color.orange.opacity(0.18)))
+                .foregroundStyle(.orange)
+                .help("The description asks for German language skills")
+        case .plus:
+            Text("German a plus")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .help("German is mentioned as a plus, not a requirement")
+        case .notMentioned:
+            EmptyView()
+        }
+    }
+}
+
 struct JobRow: View {
     @EnvironmentObject var state: AppState
     let job: Job
 
     var body: some View {
+        let application = state.application(for: job)
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .top) {
                 Text(job.title)
                     .fontWeight(.semibold)
                     .lineLimit(2)
                 Spacer(minLength: 8)
+                if application == nil {
+                    Button {
+                        state.markApplied([job])
+                    } label: {
+                        Image(systemName: "paperplane")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Mark as applied (adds it to Applications and the Excel sheet)")
+                }
                 Button {
                     state.toggleFavorite(job)
                 } label: {
@@ -98,6 +168,12 @@ struct JobRow: View {
             .lineLimit(1)
             HStack(spacing: 6) {
                 SourceBadge(source: job.source)
+                if let app = application {
+                    AppliedBadge(application: app)
+                }
+                if let req = state.germanRequirements[job.id] {
+                    GermanTag(requirement: req)
+                }
                 if let posted = job.posted {
                     Text(relativeFormatter.localizedString(for: posted, relativeTo: Date()))
                         .foregroundStyle(.secondary)
@@ -121,10 +197,75 @@ struct JobRow: View {
         .contextMenu {
             Button("Open in Browser") { state.open(job) }
             Button("Copy Link") { state.copyLink(job) }
+            Divider()
+            if application == nil {
+                let selected = state.selection.contains(job.id) && state.selection.count > 1
+                Button(selected ? "Mark \(state.selection.count) Selected as Applied" : "Mark as Applied") {
+                    if selected {
+                        state.markApplied(state.selectedJobs(in: state.results + state.favorites))
+                    } else {
+                        state.markApplied([job])
+                    }
+                }
+            } else {
+                Button("Show in Applications") { state.sidebar = .applications }
+            }
             Button(state.isFavorite(job) ? "Remove from Saved" : "Save Job") {
                 state.toggleFavorite(job)
             }
         }
+    }
+}
+
+/// Status & decision controls for an application — the same controls appear
+/// in the job detail pane and the Applications tab.
+struct ApplicationControls: View {
+    @EnvironmentObject var state: AppState
+    let application: TrackedApplication
+
+    var body: some View {
+        Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+            GridRow {
+                Text("Applied on").foregroundStyle(.secondary)
+                DatePicker(
+                    "", selection: Binding(
+                        get: { application.appliedOn },
+                        set: { d in state.updateApplication(application.id) { $0.setAppliedOn(d) } }),
+                    displayedComponents: .date)
+                    .labelsHidden()
+                    .fixedSize()
+            }
+            GridRow {
+                Text("Status").foregroundStyle(.secondary)
+                Picker("", selection: Binding(
+                    get: { application.stage },
+                    set: { s in state.updateApplication(application.id) { $0.setStage(s) } })
+                ) {
+                    ForEach(ApplicationStage.allCases, id: \.self) { Text($0.label).tag($0) }
+                }
+                .labelsHidden()
+                .fixedSize()
+            }
+            GridRow {
+                Text("Decision").foregroundStyle(.secondary)
+                HStack {
+                    Picker("", selection: Binding(
+                        get: { application.decision },
+                        set: { d in state.updateApplication(application.id) { $0.setDecision(d) } })
+                    ) {
+                        ForEach(ApplicationDecision.allCases, id: \.self) { Text($0.label).tag($0) }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                    if let date = application.decisionDate {
+                        Text("on \(date.formatted(date: .abbreviated, time: .omitted))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .font(.callout)
     }
 }
 
@@ -133,6 +274,7 @@ struct JobDetailView: View {
     let job: Job
 
     var body: some View {
+        let application = state.application(for: job)
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 6) {
@@ -155,6 +297,16 @@ struct JobDetailView: View {
                         Label("Open in Browser", systemImage: "safari")
                     }
                     .buttonStyle(.borderedProminent)
+                    if application == nil {
+                        Button {
+                            state.markApplied([job])
+                        } label: {
+                            Label("Mark as Applied", systemImage: "paperplane")
+                        }
+                        .tint(.green)
+                        .buttonStyle(.borderedProminent)
+                        .help("Adds the job, with its full description, to Applications and the Excel sheet")
+                    }
                     Button {
                         state.copyLink(job)
                     } label: {
@@ -167,6 +319,25 @@ struct JobDetailView: View {
                             state.isFavorite(job) ? "Saved" : "Save",
                             systemImage: state.isFavorite(job) ? "star.fill" : "star")
                     }
+                }
+
+                if let app = application {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            AppliedBadge(application: app)
+                            if app.id != job.id {
+                                Text("(applied via \(SourceRegistry.displayName(app.job.source)))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Open in Applications") { state.sidebar = .applications }
+                                .controlSize(.small)
+                        }
+                        ApplicationControls(application: app)
+                    }
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(app.decision.color.opacity(0.07)))
                 }
 
                 Divider()
@@ -207,7 +378,14 @@ struct JobDetailView: View {
                     }
                     GridRow {
                         Text("Language").foregroundStyle(.secondary)
-                        Text(job.detectedLanguage == "de" ? "German 🇩🇪" : "English 🇬🇧")
+                        languageText
+                    }
+                    if let req = state.germanRequirements[job.id] {
+                        GridRow {
+                            Text("German").foregroundStyle(.secondary)
+                            Text(req.label)
+                                .foregroundStyle(req == .required ? .orange : .secondary)
+                        }
                     }
                     GridRow {
                         Text("Link").foregroundStyle(.secondary)
@@ -219,23 +397,44 @@ struct JobDetailView: View {
                 }
                 .font(.callout)
 
-                if !job.descriptionText.isEmpty {
-                    Divider()
-                    Text("Description").font(.headline)
-                    Text(job.descriptionText)
-                        .font(.callout)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    Text("Open the job in your browser for the full description.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Divider()
+                Text("Description").font(.headline)
+                descriptionBody
                 Spacer()
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(Color(nsColor: .textBackgroundColor))
+        .task(id: job.id) { state.loadDescription(for: job) }
+    }
+
+    @ViewBuilder var languageText: some View {
+        switch state.verdict(for: job) {
+        case .english: Text("English 🇬🇧")
+        case .notEnglish: Text("Not in English")
+        case .unverified: Text("English title (not yet confirmed from the description)")
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder var descriptionBody: some View {
+        if let text = state.descriptionText(for: job) {
+            Text(text)
+                .font(.callout)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else if state.loadingDescriptions.contains(job.id) {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Loading the full description…").foregroundStyle(.secondary)
+            }
+        } else if let error = state.descriptionErrors[job.id] {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(error).font(.caption).foregroundStyle(.orange)
+                Button("Try again") { state.loadDescription(for: job) }
+                    .controlSize(.small)
+            }
+        }
     }
 }

@@ -18,16 +18,33 @@ public enum SourceRegistry {
         }
     }
 
+    /// Which sources can search the given country. LinkedIn, Indeed and
+    /// company career sites work everywhere; the German boards don't.
+    public static func isAvailable(_ source: String, in country: Country) -> Bool {
+        switch source {
+        case "arbeitsagentur", "stepstone": return country.code == "DE"
+        case "xing": return ["DE", "AT", "CH"].contains(country.code)
+        default: return true
+        }
+    }
+
+    public static func availabilityNote(_ source: String) -> String? {
+        switch source {
+        case "arbeitsagentur", "stepstone": return "Germany only"
+        case "xing": return "Germany, Austria and Switzerland only"
+        default: return nil
+        }
+    }
+
     public static func make(
         names: [String],
-        watchlist: [ATSCompany] = [],
-        indeedCountry: String = "DE"
+        watchlist: [ATSCompany] = []
     ) -> [any JobSource] {
         names.compactMap { name in
             switch name {
             case "linkedin": return LinkedInSource()
             case "arbeitsagentur": return ArbeitsagenturSource()
-            case "indeed": return IndeedSource(country: indeedCountry)
+            case "indeed": return IndeedSource()
             case "xing": return XingSource()
             case "stepstone": return StepStoneSource()
             case "career-site": return CompanyWatchlistSource(companies: watchlist)

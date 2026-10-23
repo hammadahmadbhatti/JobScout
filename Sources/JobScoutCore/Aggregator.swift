@@ -71,8 +71,15 @@ public enum Aggregator {
         }
 
         // Generic post-filters (sources apply native filters where they can).
+        // Each source already stops at `limit`, so the merged list is not
+        // capped again — every source's results reach the user.
+        var hiddenNonEnglish = 0
         if let query = queries.first {
-            merged = LanguageDetector.filter(merged, languages: query.languages)
+            if query.englishOnly {
+                let before = merged.count
+                merged = LanguageDetector.englishOrUnverified(merged)
+                hiddenNonEnglish = before - merged.count
+            }
             merged = ExperienceFilter.apply(merged, wanted: query.experience)
             if let cutoff = query.datePosted.cutoff {
                 // Only drop jobs we positively know are older; unknown dates pass
@@ -82,13 +89,9 @@ public enum Aggregator {
                     return posted >= cutoff
                 }
             }
-            let totalLimit = query.limit * max(queries.count, 1)
-            if merged.count > totalLimit {
-                merged = Array(merged.prefix(totalLimit))
-            }
         }
 
-        return SearchResult(jobs: merged, statuses: statuses)
+        return SearchResult(jobs: merged, statuses: statuses, hiddenNonEnglish: hiddenNonEnglish)
     }
 }
 

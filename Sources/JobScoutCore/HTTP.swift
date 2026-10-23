@@ -24,7 +24,9 @@ public enum HTTP {
         cfg.timeoutIntervalForResource = 60
         cfg.httpCookieAcceptPolicy = .always
         cfg.httpShouldSetCookies = true
-        cfg.httpAdditionalHeaders = ["Accept-Language": "de-DE,de;q=0.9,en;q=0.8"]
+        // English first: sites answer with English labels and dates where
+        // they can ("2 days ago", "Full-time").
+        cfg.httpAdditionalHeaders = ["Accept-Language": "en-US,en;q=0.9,de;q=0.6"]
         return URLSession(configuration: cfg)
     }()
 

@@ -137,20 +137,12 @@ struct WatchlistView: View {
         let companies = state.watchlist
         Task {
             let source = CompanyWatchlistSource(companies: companies)
-            do {
-                var query = SearchQuery()
-                query.limit = 1000
-                var jobs = try await source.search(query)
-                jobs.sort { ($0.posted ?? .distantPast) > ($1.posted ?? .distantPast) }
-                await MainActor.run {
-                    companyJobs = jobs
-                    loadingJobs = false
-                }
-            } catch {
-                await MainActor.run {
-                    loadError = "Failed: \(error.localizedDescription)"
-                    loadingJobs = false
-                }
+            var jobs = await source.allJobs()
+            jobs.sort { ($0.posted ?? .distantPast) > ($1.posted ?? .distantPast) }
+            await MainActor.run {
+                companyJobs = jobs
+                loadError = jobs.isEmpty ? "No open positions found (or the career pages didn't answer)." : nil
+                loadingJobs = false
             }
         }
     }
